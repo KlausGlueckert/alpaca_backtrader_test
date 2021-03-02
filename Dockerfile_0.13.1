@@ -1,0 +1,16 @@
+FROM python:3.6-slim
+
+RUN pip install backtrader==1.9.76.123 \
+                alpaca-backtrader-api==0.13.1 \
+                pandas_market_calendars \
+                pandas \
+                numpy \
+                pendulum \
+                pytest
+
+COPY app /app
+
+WORKDIR /app
+
+
+

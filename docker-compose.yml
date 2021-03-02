@@ -1,0 +1,17 @@
+version: '3.6'
+
+services:
+  test1:
+    container_name: alpaca_backtrader_test_test1
+    volumes:
+      - ${PWD}/app:/app
+    environment:
+      - APCA_API_KEY_ID=${APCA_API_KEY_ID}
+      - APCA_API_SECRET_KEY=${APCA_API_SECRET_KEY}
+      - DOCKERFILE=${DOCKERFILE}
+      - IS_LIVE=${IS_LIVE}
+    build:
+      context: ./
+      dockerfile: ./${DOCKERFILE}
+      
+    command: bash main.sh
