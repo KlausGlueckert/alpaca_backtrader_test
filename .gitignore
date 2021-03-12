@@ -1,5 +1,6 @@
 ####### Custom #########
 .pytest_cache/
+ENV.sh
 
 ####### R ##############
 .Rhistory

@@ -359,7 +359,7 @@ class StrategyStoploss(bt.Strategy):
                     # cancel stop order
                     if o.status != o.Canceled:
                         self.log("event=cancel_stop",f"asset={SYMB}")
-                        if not IS_BACKTEST: self.cancel_orders(SYMB,client_order_id=self.o[SYMB][1])  # hack in case no nofity_order ("Canceled") is sent:
+                        if not IS_BACKTEST: self.cancel_orders(SYMB,client_order_id=self.o[SYMB][1].client_order_id)  # hack in case no nofity_order ("Canceled") is sent:
                         self.broker.cancel(self.o[SYMB][1])
                         self.log("event=close_position",f"asset={SYMB}")
                         self.o[SYMB][2] = self.close(d,time_in_force='fok').addinfo(label='expiration')
