@@ -36,12 +36,12 @@ SHORT_CASH =  True
 TIMEFRAME = bt.TimeFrame.Minutes
 COMPRESSION = 1
 FROMDATE = pendulum.datetime( 2021, 2, 1,5,0,0, tz='UTC').in_timezone('America/New_York')  
-TODATE =   pendulum.datetime( 2021, 2, 1,16,00,0, tz='UTC').in_timezone('America/New_York') 
-EXPIRATION_BARS = 2
-STOP_BARS = 30
+TODATE =   pendulum.datetime( 2021, 2, 10,16,00,0, tz='UTC').in_timezone('America/New_York') 
+EXPIRATION_BARS = 3
+STOP_BARS = 60
 SIGNAL_RSI_LONG = 40
 SIGNAL_RSI_SHORT = 60
-STOP_LOSS_PERC = 0.0015
+STOP_LOSS_PERC = 0.001
 SESSION_START_DELAY_HOURS = 0
 
 
@@ -81,7 +81,7 @@ class custom_Sizer(bt.Sizer):
         return size
 
 
-class StrategyStoploss(bt.Strategy):
+class LongShort(bt.Strategy):
     
     params = dict( )
     
@@ -93,11 +93,11 @@ class StrategyStoploss(bt.Strategy):
         self.count_bars = 0
         self.new_bar = False
         self.last_bar = 0 
-        self.whichord = ['main','stop','close']
         self.cashtotrade = 0
         self.session_running = False
         self.session_date = ''
         self.signal_rsi0 = SIGNAL_RSI_LONG
+        self.whichord = ['main']
         
     def log(self,txt,*args):
         if LOGGING:                       # can be deactivated for wrapper optimizer 
@@ -150,33 +150,9 @@ class StrategyStoploss(bt.Strategy):
         self.log("event=order",f"asset={asset}",f"label={order.info.label}",f"type={otype}",f"side={side}",f"price={'%.2f' % order.executed.price}",f"size={str(int(order.executed.size))}",f"margin={str(order.executed.margin)}",f"status={str(status)}",f"ref={str(order.ref)}")
 
         # print orderlist
-        if status in ['Accepted','Completed']: self.print_orderlist(asset)
-         
-        # on completed Market order, create Stop order
-        if status == 'Completed' and otype == 'Market':
-            if order.info.label == 'main':
-                # set stop order after main order completed!
-                if self.o[asset][1] is None and self.o[asset][2] is None:
-                    datas = {d._name:d for i, d in enumerate(self.datas) }
-                    stop_price = np.round(order.executed.price * order.info.stop_loss_perc  ,2)
-                    oid = self.oid()
-                    if side=='buy':
-                        stop  = self.sell(data=datas[asset],price=stop_price, size=order.executed.size, exectype=bt.Order.Stop,client_order_id=oid) # parent not working in live
-                    else:
-                        stop  = self.buy(data=datas[asset],price=stop_price, size=abs(order.executed.size), exectype=bt.Order.Stop,client_order_id=oid) # parent not working in live   
-                    stop.addinfo(client_order_id=oid,label='stop')
-                    self.o[asset][1] = stop
-            return
-
-        '''
-        # NOT WORKING IN LIVE MODE
-        # if stop-order is canceled successfully, close main position
-        if status == 'Canceled' and otype == 'Stop':
-            datas = {d._name:d for i, d in enumerate(self.datas) }
-            self.log("event=close_main_expiration",f"asset={asset}")
-            self.o[asset][2] = self.close(datas[asset])
-            if not self.o[asset][2] is None: self.o[asset][2] = self.o[asset][2].addinfo(label='expiration')
-        '''
+        if status in ['Accepted','Completed','Canceled']: self.print_orderlist(asset)
+        
+        return
 
     def notify_trade(self, trade):
         # new trade, not update of position!
@@ -312,25 +288,12 @@ class StrategyStoploss(bt.Strategy):
                 o = self.o[SYMB][0]  # main order
                 if not o is None:
                     # case: main order not filled after 2 bars
-                    if self.position_bars_none[SYMB] >= 2 and o.status == o.Accepted :
-                        self.log("event=orders_cleaned_mainorder_notfilled",f"asset={SYMB}",f"ref={str(o.ref)}")
+                    if self.position_bars_none[SYMB] >= 2 and o.status in [o.Accepted, o.Rejected] :
+                        self.log("event=orders_cleaned_mainorder_notfilled",f"asset={SYMB}",f"status={o.status}",f"ref={str(o.ref)}")
                         self.cancel_orders(SYMB)
-                        self.o[SYMB] = [None,None,None]
+                        self.o[SYMB] = [None]
                         continue
-                    # case: cycle completed [Completed, *, *] | position = 0 --> reset all
-                    if o.status in [o.Completed, o.Canceled, o.Expired]:
-                        self.o[SYMB] = [None,None,None]
-                        self.log("event=orders_cleaned_completed_cycle",f"asset={SYMB}",f"message=----------")
-                        continue
-
-                    # case main order was rejected
-                    if o.status in [o.Rejected]:
-                        self.o[SYMB] = [None,None,None]
-                        self.log("event=orders_cleaned_mainorder_rejected",f"asset={SYMB}",f"message=----------")
-                        continue
-
-                # case stop order was rejected
-            
+                    
             #========= switch dummy signals
             if position_size < 0: self.signal_rsi0 = SIGNAL_RSI_LONG
             if position_size > 0: self.signal_rsi0  = SIGNAL_RSI_SHORT
@@ -347,24 +310,24 @@ class StrategyStoploss(bt.Strategy):
             
             if position_size != 0 and self.position_bars_active[SYMB] >= 1:
 
+               #=============stop loss?
+                mainside = self.o[SYMB][0]
+                price_exec = mainside.executed.price
+                price_stop = mainside.info.stop_loss_perc * price_exec
+                if (position_size > 0 and p_close_bar <= price_stop ) or (position_size < 0 and p_close_bar >= price_stop):
+                    self.log("event=position_stop",f"asset={SYMB}",f"position={position_size}",f"price_stop={np.round(price_stop,2)}",f"price_exec={np.round(price_exec,2)}","value=|--------------------STOPLOSS-------------------|")
+                    self.close(d).addinfo(label='stop')
+                    self.o[SYMB] = [None]
+                    continue
+
                 #=============window expired?
                 if self.position_bars_active[SYMB] >= EXPIRATION_BARS :
-                    self.log("event=position_expired",f"asset={SYMB},value=|--------------------EXPIRED--------------------|")
-                    o = self.o[SYMB][1]
-                    # case stop order was removed or doesnt exist
-                    if o is None:
-                        self.log("event=close_position",f"asset={SYMB}")
-                        self.o[SYMB][2] = self.close(d,time_in_force='fok').addinfo(label='expiration')
-                        continue
-                    # cancel stop order
-                    if o.status != o.Canceled:
-                        self.log("event=cancel_stop",f"asset={SYMB}")
-                        if not IS_BACKTEST: self.cancel_orders(SYMB,client_order_id=self.o[SYMB][1].client_order_id)  # hack in case no nofity_order ("Canceled") is sent:
-                        self.broker.cancel(self.o[SYMB][1])
-                        self.log("event=close_position",f"asset={SYMB}")
-                        self.o[SYMB][2] = self.close(d,time_in_force='fok').addinfo(label='expiration')
-                        continue
+                    self.log("event=position_expired",f"asset={SYMB}",f"size={position_size}",f"price={p_close_bar}","value=|--------------------EXPIRED-------------------|")
+                    self.close(d).addinfo(label='expiration')
+                    self.o[SYMB] = [None]
+                    continue
 
+ 
             if  position_size == 0 and self.position_bars_none[SYMB] >= 2 and self.count_bars < STOP_BARS:
                 
                 # ======= signal long position
@@ -375,8 +338,7 @@ class StrategyStoploss(bt.Strategy):
                     oid = self.oid()
                     mainside = self.buy(data=d,exectype=bt.Order.Market, transmit=True,time_in_force='fok',client_order_id=oid) # transmit false fails
                     mainside.addinfo(label='main',stop_loss_perc=stop_loss_perc,client_order_id=oid)
-                    self.o[SYMB] = [mainside,None,None]
-
+                    self.o[SYMB] = [mainside]
                     continue 
 
 
@@ -388,7 +350,7 @@ class StrategyStoploss(bt.Strategy):
                     oid = self.oid()
                     mainside = self.sell(data=d,exectype=bt.Order.Market, transmit=True,time_in_force='fok',client_order_id=oid) # transmit false fails
                     mainside.addinfo(label='main',stop_loss_perc=stop_loss_perc,client_order_id=oid)
-                    self.o[SYMB] = [mainside,None,None]
+                    self.o[SYMB] = [mainside]
                     continue
             
 
@@ -402,7 +364,7 @@ def setup_cerebro(IS_BACKTEST):
     cerebro.addobserver(bt.observers.DrawDown)
 
     # strategy
-    cerebro.addstrategy(StrategyStoploss)
+    cerebro.addstrategy(LongShort)
 
     # Add sizer
     cerebro.addsizer(custom_Sizer)
@@ -436,7 +398,7 @@ def setup_cerebro(IS_BACKTEST):
         else:
             fromdate = pendulum.now('US/Eastern') - timedelta( minutes=70)
             D[SYMB] = DataFactory(dataname=SYMB,historical=False,fromdate=fromdate,timeframe=bt.TimeFrame.Ticks,compression=COMPRESSION,backfill_start=True,backfill=True,qcheck=0.5 )
-            #cerebro.adddata(D[SYMB],name=SYMB) # tickdata in live mode
+            cerebro.adddata(D[SYMB],name=SYMB) # tickdata in live mode
         cerebro.resampledata(D[SYMB],name=SYMB,timeframe=TIMEFRAME,compression=COMPRESSION)# bardata in live mode
 
 
